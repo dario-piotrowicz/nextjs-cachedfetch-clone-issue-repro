@@ -1,58 +1,40 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`c3`](https://developers.cloudflare.com/pages/get-started/c3).
+# Next.js' `cachedFetch` response cloning issue
 
-## Getting Started
+This is a minimal reproduction showing that Next.js' `cachedFetch` function "wasteful" response cloning ([Source code](https://github.com/vercel/next.js/blob/c353b5f0e6a249fcbcf6d073909d203ec7f40768/packages/next/src/compiled/react/cjs/react.react-server.production.js#L127-L131)).
 
-First, run the development server:
+## What the issue is
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+As you can see from the source code linked above Next.js' `cachedFetch` indiscriminately clones responses so that they can be read multiple times.
+
+This makes sense but it's wasteful as cloning the `response` is actually necessary only when its body is read.
+
+When running such `cachedFetch` inside the Cloudflare workerd runtime indeed you get the following error:
+![error in the terminal](./terminal-error.png)
+
+## How to see the error using this reproduction
+
+Install the dependencies:
+```sh
+$ npm i
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+build the Next.js application for Cloudflare Pages and preview it (using `wrangler`) with:
+```sh
+$ npm run preview
+```
 
-## Cloudflare integration
+Navigate to the app's home page and you'll be able to see the error in your terminal.
 
-Besides the `dev` script mentioned above `c3` has added a few extra scripts that allow you to integrate the application with the [Cloudflare Pages](https://pages.cloudflare.com/) environment, these are:
-  - `pages:build` to build the application for Pages using the [`@cloudflare/next-on-pages`](https://github.com/cloudflare/next-on-pages) CLI
-  - `preview` to locally preview your Pages application using the [Wrangler](https://developers.cloudflare.com/workers/wrangler/) CLI
-  - `deploy` to deploy your Pages application using the [Wrangler](https://developers.cloudflare.com/workers/wrangler/) CLI
+(The error is caused by the home page route making a fetch request twice to the same endpoint, triggering the issue).
 
-> __Note:__ while the `dev` script is optimal for local development you should preview your Pages application as well (periodically or before deployments) in order to make sure that it can properly work in the Pages environment (for more details see the [`@cloudflare/next-on-pages` recommended workflow](https://github.com/cloudflare/next-on-pages/blob/05b6256/internal-packages/next-dev/README.md#recommended-workflow))
+## Possible Solutions
 
-### Bindings
+Some possible solutions might be:
 
-Cloudflare [Bindings](https://developers.cloudflare.com/pages/functions/bindings/) are what allows you to interact with resources available in the Cloudflare Platform.
+ - In the `cachedFetch`, instead of indiscriminately cloning responses, a proxy response-like object could be returned instead, that behaves exactly like a web response, but when it's body gets read it clones the response under the hood.
 
-You can use bindings during development, when previewing locally your application and of course in the deployed application:
+ - In the `cachedFetch` return the response as is without cloning, leaving this task to the developer, they know that `fetch` in Next.js can return the same cached response so based on that knowledge they can manually decide to do the cloning when they know that the same response will be reused.
 
-- To use bindings in dev mode you need to define them in the `next.config.js` file under `setupDevBindings`, this mode uses the `next-dev` `@cloudflare/next-on-pages` submodule. For more details see its [documentation](https://github.com/cloudflare/next-on-pages/blob/05b6256/internal-packages/next-dev/README.md).
+## Extra
 
-- To use bindings in the preview mode you need to add them to the `pages:preview` script accordingly to the `wrangler pages dev` command. For more details see its [documentation](https://developers.cloudflare.com/workers/wrangler/commands/#dev-1) or the [Pages Bindings documentation](https://developers.cloudflare.com/pages/functions/bindings/).
-
-- To use bindings in the deployed application you will need to configure them in the Cloudflare [dashboard](https://dash.cloudflare.com/). For more details see the  [Pages Bindings documentation](https://developers.cloudflare.com/pages/functions/bindings/).
-
-#### KV Example
-
-`c3` has added for you an example showing how you can use a KV binding.
-
-In order to enable the example:
-- Search for javascript/typescript lines containing the following comment:
-  ```ts
-  // KV Example:
-  ```
-  and uncomment the commented lines below it.
-- Do the same in the `wrangler.toml` file, where
-  the comment is:
-  ```
-  # KV Example:
-  ```
-
-After doing this you can run the `dev` or `preview` script and visit the `/api/hello` route to see the example in action.
-
-Finally, if you also want to see the example work in the deployed application make sure to add a `MY_KV` binding to your Pages application in its [dashboard kv bindings settings section](https://dash.cloudflare.com/?to=/:account/pages/view/:pages-project/settings/functions#kv_namespace_bindings_section). After having configured it make sure to re-deploy your application.
+I appreciate that this issue seems only relevant in the Cloudflare workerd runtime, and in a certain sense it is, however the unnecessary cloning and resource wasting is not Cloudflare specific and I'd imagine that it should ideally be avoided.
